@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+cd "$(dirname $0)"
+
+DIR_NAME=../benchmarks/$1_$2/rising
+if [ -d $DIR_NAME ] ; then
+    echo $DIR_NAME
+else
+    mkdir -p $DIR_NAME
+fi
+
+for((i = 100; i <= 4000; i = i + 100));
+do
+	echo -ne "BW: ($i/4000)\r"
+	./start.sh $i $3
+	sleep 1s
+	NUMBER=$(printf "%08d" $i)
+	../vision/$1_$2/$1 -d 0 -p 0 -c 0 -t 1 -l 2 -o $DIR_NAME/timing_$NUMBER.csv -b ../vision/$1_$2
+done
+echo -ne "\n"
+head -n 1 $DIR_NAME/timing_00000100.csv > $DIR_NAME/rising_$3.csv && tail -n+2 -q $DIR_NAME/timing*.csv >> $DIR_NAME/rising_$3.csv
+
+rm $DIR_NAME/timing*
+exit 0
+
