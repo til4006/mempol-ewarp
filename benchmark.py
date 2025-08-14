@@ -34,7 +34,9 @@ class BenchmarkParser(object):
     TRACE_INFO_BASENAME = "trace.info"
     TIMING_CSV_BASENAME = "timing.csv"
     CACHED_DATA_BASENAME = "cached_data.pkl"
-    RISING_BUDGET_BASENAME = "rising/rising.csv"
+    RISING_BUDGET_BASENAME = "rising/rising_0.csv"
+    RISING_BUDGET_WITH_INF_BASENAME = "rising/rising_1000.csv"
+    MEMGUARD_BUDGET_BASENAME = "rising/mg/"
 
     def __init__(self, args):
         self.load_cache = args.load_cache
@@ -57,6 +59,12 @@ class BenchmarkParser(object):
         )
         self.rising_data_path = os.path.join(
             self.benchmark_dir, self.RISING_BUDGET_BASENAME
+        )
+        self.rising_data_path_with_inf = os.path.join(
+            self.benchmark_dir, self.RISING_BUDGET_WITH_INF_BASENAME
+        )
+        self.memguard_budget_path = os.path.join(
+            self.benchmark_dir, self.MEMGUARD_BUDGET_BASENAME
         )
         return
 
@@ -117,6 +125,7 @@ class BenchmarkParser(object):
         benchmark.jobs = self.load_cached_data()
         benchmark.measured_data = self.parse_rising_data()
         benchmark.measured_data_with_inf = self.parse_rising_data_with_inf()
+        benchmark.rising_mg = self.parse_rising_mg()
         return benchmark
 
     def parse_benchmark_data(self):
@@ -128,6 +137,7 @@ class BenchmarkParser(object):
         benchmark.jobs = self.jobs
         benchmark.measured_data = self.parse_rising_data()
         benchmark.measured_data_with_inf = self.parse_rising_data_with_inf()
+        benchmark.rising_mg = self.parse_rising_mg()
         if self.store_cache:
             self.store_cached_data(benchmark)
         return benchmark
@@ -147,19 +157,33 @@ class BenchmarkParser(object):
     
     def parse_rising_data_with_inf(self, measured_budget=range(100, 4001, 100)):
         result = {}
-        for inf in range(500, 4001, 500):
-            result[inf] = {}
-            if not os.path.exists(self.rising_data_path.replace("rising.csv", f"inf_{inf:08d}")):
-                print(f"Missing rising data for inf {inf}")
-                return None
-            with open(self.rising_data_path.replace("rising.csv", f"inf_{inf:08d}/rising.csv"), "r") as file:
+        with open(self.rising_data_path_with_inf, "r") as file:
+            reader = csv.DictReader(file)
+            result["measured_time_ms"] = []
+            for row in reader:
+                result["measured_time_ms"].append(
+                    float(row["job_elapsed(seconds)"]) * 1000
+                )
+            result["measured_time_ms"] = result["measured_time_ms"][:len(measured_budget)]
+            result["measured_budget"] = measured_budget
+        return result
+    
+    def parse_rising_mg(self, measured_budget=range(100, 4001, 100)):
+        result = {
+            "0x17": {},
+            "0x18": {},
+            "0x19": {}
+        }
+        for key, r in result.items():
+            with open(os.path.join(self.memguard_budget_path, f"rising_mg_{key}.csv"), "r") as file:
                 reader = csv.DictReader(file)
-                result[inf]["measured_time_ms"] = []
+                r["measured_time_ms"] = []
                 for row in reader:
-                    result[inf]["measured_time_ms"].append(
+                    r["measured_time_ms"].append(
                         float(row["job_elapsed(seconds)"]) * 1000
                     )
-                result[inf]["measured_budget"] = measured_budget
+                r["measured_time_ms"] = r["measured_time_ms"][:len(measured_budget)]
+                r["measured_budget"] = measured_budget
         return result
 
     def parse_job_data(self, coreid=0):
@@ -201,6 +225,7 @@ class Benchmark(object):
         self.jobs = []
         self.measured_data = {}
         self.measured_data_with_inf = {}
+        self.rising_mg = {}
 
 
 class CoreData(object):
@@ -363,8 +388,69 @@ def get_wcet_cpu(
             x_s = min(x_plus, x_minus + x_off)
     return t + t_add
 
+def get_wcet_cpu_with_bug(
+    task,
+    M_j,
+    CPU_k,
+    t_ovh=0,
+    x_ovh=0,
+    t_stall=0,
+    P=10000 * 10,
+    delta=10000,
+    Q=10000 * 10,
+):
+    t_add = P
+    x_off = 0
+    t_s = 0
+    x_s = 0
+    h = 0
+    for h, sigma_j in enumerate(M_j[1:]):
+        x_plus = sigma_j["x+j"]
+        x_minus = sigma_j["x-j"]
+        t = delta * h
+        if t - t_s >= P:
+            t_add = t_add + t_stall * x_s + t_ovh
+            t_s = t - ((t - t_s) - P)
+        if x_plus - x_s >= Q:
+            t_add += P - (t - t_s) + t_ovh
+            t_s = t
+            x_off = max(x_off, x_minus) + Q
+        x_s = min(x_plus, max(x_minus, x_off))
+    return t + t_add
 
-def get_wcet_cpu_mempol_sw(
+
+def get_wcet_cpu_mixed(
+    task,
+    M_j,
+    CPU_k,
+    t_ovh=0,
+    x_ovh=0,
+    t_stall=0,
+    P=10000 * 10,
+    delta=10000,
+    Q=10000 * 10,
+):
+    t_add = P
+    x_off = 0
+    t_s = 0
+    x_s = 0
+    h = 0
+    for h, sigma_j in enumerate(M_j[1:]):
+        x_plus = sigma_j["x+j"]
+        x_minus = sigma_j["x-j"]
+        t = delta * h
+        if t - t_s >= P:
+            t_add = t_add + t_stall * x_s + t_ovh
+            t_s = t - ((t - t_s) - P)
+            x_s = min(x_plus, max(x_minus, x_off))
+        if x_plus - x_s >= Q:
+            t_add += P - (t - t_s) + t_ovh
+            t_s = t
+            x_off = x_s + Q
+            x_s = min(x_plus, max(x_minus, x_off))
+    return t + t_add
+
+def get_wcet_cpu_mempol_sw_old(
     task,
     M_j,
     CPU_k,
@@ -397,6 +483,42 @@ def get_wcet_cpu_mempol_sw(
             x_s = x_plus
             x_off = x_plus + Q * len(history)  # max(x_off, x_plus) + Q * len(history)
             history = []
+    return t + t_add
+
+def get_wcet_cpu_mempol_sw(
+    task,
+    M_j,
+    CPU_k,
+    t_ovh=0,
+    x_ovh=0,
+    t_stall=0,
+    P=10000 * 10,
+    delta=10000,
+    Q=10000 * 10,
+    window_size=5,
+):
+    t_add = 0
+    x_off = 0
+    t_s = 0
+    x_s = 0
+    h = 0
+    history = [0] * window_size
+    for h, sigma_j in enumerate(M_j[1:]):
+        x_plus = sigma_j["x+j"]
+        x_minus = sigma_j["x-j"]
+        t = delta * h
+        if len(history) >= window_size:
+            x_s = Q * len(history) + history.pop(0)
+        else:
+            x_s = history[0] + Q * len(history)
+        if x_plus - x_s > 0:
+            overshoot = x_plus - x_s
+            t_add += math.ceil((overshoot) / Q) * delta
+            x_off = x_plus
+            history = []
+            history.append(x_off)
+        else:
+            history.append(max(x_minus, x_off))
     return t + t_add
 
 
@@ -437,12 +559,14 @@ def plot_run(
     run = runs[index]
     accesses = [td.get_weighted_access(weight_factor) for td in run.trace_data]
     t = [i * sample_rate_ns / 1_000_000 for i in range(len(run.trace_data))]
+    plt.figure(figsize=[6.4, 2.4])
     plt.plot(t, accesses)
     plt.xlabel("Time (ms)")
     plt.ylabel("Weighted Accesses")
     plt.title(title)
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     plt.savefig(filename)
+    plt.savefig(filename.replace(".eps", ".png"))
     plt.close()
 
 
@@ -452,14 +576,17 @@ def plot_envelope(
     t = [i * sample_rate_ns / 1_000_000 for i in range(len(envelope[1:]))]
     xp_j = [sigma_j["x+j"] for sigma_j in envelope[1:]]
     xm_j = [sigma_j["x-j"] for sigma_j in envelope[1:]]
+    plt.figure(figsize=[6.4, 2.4])
     plt.plot(t, xp_j, color=colors[0])
     plt.plot(t, xm_j, color=colors[0])
     plt.fill_between(t, xm_j, xp_j, color=colors[1])
+    plt.ylim(0, 3.8e9)
     plt.xlabel("Time (ms)")
     plt.ylabel("Cummulative Accesses")
     plt.title(title)
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     plt.savefig(filename)
+    plt.savefig(filename.replace(".eps", ".png"))
     plt.close()
 
 
@@ -491,6 +618,33 @@ def calculate_memguard_wcet(bm, envelope, budgets, period_ns=1_000_000):
     wcet_regulated_memguard = [i / 1_000_000 for i in wcet_regulated_ns]
     return wcet_regulated_memguard
 
+def calculate_memguard_wcet_with_bug(bm, envelope, budgets, period_ns=1_000_000):
+    q = [
+        convert_bandwidth_to_memguard_budget(
+            i, weight_factor=1000, period_ns=period_ns, cache_line_size=64
+        )
+        for i in budgets
+    ]
+    wcet_regulated_ns = [
+        get_wcet_cpu_with_bug(bm.name, envelope, "CPU0", Q=i, P=period_ns, delta=10_000)
+        for i in q
+    ]
+    wcet_regulated_memguard = [i / 1_000_000 for i in wcet_regulated_ns]
+    return wcet_regulated_memguard
+
+def calculate_memguard_wcet_mixed(bm, envelope, budgets, period_ns=1_000_000):
+    q = [
+        convert_bandwidth_to_memguard_budget(
+            i, weight_factor=1000, period_ns=period_ns, cache_line_size=64
+        )
+        for i in budgets
+    ]
+    wcet_regulated_ns = [
+        get_wcet_cpu_mixed(bm.name, envelope, "CPU0", Q=i, P=period_ns, delta=10_000)
+        for i in q
+    ]
+    wcet_regulated_memguard = [i / 1_000_000 for i in wcet_regulated_ns]
+    return wcet_regulated_memguard
 
 def calculate_mempol_wcet(bm, envelope, budgets, algo, algo_name):
     q = [
@@ -537,18 +691,8 @@ def calculate_deviation_and_plot_hist(
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         i += 1
     plt.savefig(filename)
+    plt.savefig(filename.replace(".eps", ".png"))
     plt.close()
-    i = 0
-    for deviations, deviation_percent in deviations_list:
-        plt.hist(deviation_percent, bins=50, label = legend[i], alpha=0.3, rasterized=True)
-        plt.xlabel("Deviation (%)")
-        plt.ylabel("Frequency")
-        plt.title(title)
-        plt.legend(loc="upper right")
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        i += 1
-    plt.close()
-    plt.savefig(filename.replace(".eps", "_perc.eps"))
     return
 
 def calculate_deviation_and_plot(
@@ -573,11 +717,69 @@ def calculate_deviation_and_plot(
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         i += 1
     plt.savefig(filename)
+    plt.savefig(filename.replace(".eps", ".png"))
     plt.close()
     return deviations, deviation_percent
 
 def plot_measured_data_with_inf(
-    wcet_list, budgets, data, filename, title="", legend=None
+    wcet_list, budgets, data, filename, title, legend, ylim
+):
+    if data != None:
+        colors = ["red", "orange", "green", "blue", "#B0E0E6", "#ADD8E6"]
+        for i, wcet in enumerate(wcet_list):
+            plt.plot(
+                budgets,
+                wcet,
+                color=colors[i],
+                linestyle="solid",
+                label=legend[i],
+                linewidth=0.6,
+            )
+            crossing = 100
+            for j in range(1, len(data["measured_budget"])):
+                if data["measured_time_ms"][j] > wcet[j*10] and data["measured_time_ms"][j-1] <= wcet[(j-1)*10]:
+                    crossing = data["measured_budget"][j]
+            plt.plot(
+                [crossing, crossing],
+                [0, ylim],
+                color=colors[i],
+                linestyle="dotted",
+                label=f"{legend[i]}: {crossing} MB/s",
+            )
+            
+        plt.plot(
+            data["measured_budget"],
+            data["measured_time_ms"],
+            color="#4682B4",
+            label=f"Measured (Inf: 1000 MB/s)",
+            linestyle="dashed",
+            linewidth=0.8,
+        )
+        plt.fill_between(
+            data["measured_budget"],
+            data["measured_time_ms"],
+            color="#ADD8E6",
+            alpha=0.1,
+        )
+        plt.plot(
+            [1000, 1000],
+            [0, ylim],
+            color="#808080",
+            linestyle="dashed",
+        )
+        plt.ylim(0, ylim*1.05)
+        plt.legend(loc="upper right")
+        plt.xlabel("Budget (MB/s)")
+        plt.ylabel("Execution Time (ms)")
+        plt.title(title)
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        plt.savefig(filename)
+        plt.savefig(filename.replace(".eps", ".png"))
+        plt.close()
+    return
+
+def plot_rising_mg(
+    wcet_list, budgets, data, filename, title, legend, ylim
 ):
     if data != None:
         for i, wcet in enumerate(wcet_list):
@@ -587,28 +789,34 @@ def plot_measured_data_with_inf(
                 label=legend[i],
                 linewidth=0.6,
             )
-        for inf in data.keys():
-            #random color
-            random.randint(0, 255)
-            color = f"#{random.randint(0, 255):02x}{random.randint(0, 255):02x}{random.randint(0, 255):02x}"
+        for key, value in data.items():
             plt.plot(
-                data[inf]["measured_budget"],
-                data[inf]["measured_time_ms"],
-                color=color,
-                label=f"Inf: {inf}",
+                value["measured_budget"],
+                value["measured_time_ms"],
+                label=f"PMU: {key}",
                 linestyle="dashed",
-                linewidth=0.4,
-                
+                linewidth=0.8,
             )
-        plt.legend(loc="upper right", prop={'size': 6})
+        plt.ylim(0, ylim)
+        plt.legend(loc="upper right")
         plt.xlabel("Budget (MB/s)")
         plt.ylabel("Execution Time (ms)")
         plt.title(title)
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         plt.savefig(filename)
+        plt.savefig(filename.replace(".eps", ".png"))
         plt.close()
-    return
+    return 
 
+def get_max_y(data_list):
+    max_y = 0
+    for data in data_list:
+        if isinstance(data, list):
+            max_y = max(max_y, max(data))
+        elif isinstance(data, dict):
+            if "measured_time_ms" in data:
+                max_y = max(max_y, max(data["measured_time_ms"]))
+    return max_y 
 
 def main():
     args = parse_arguments()
@@ -631,13 +839,22 @@ def main():
     budgets = range(100, 4001, 10)
     # create a list of memguard budgets and calculate wcet for each budget
     wcet_regulated_memguard = calculate_memguard_wcet(bm, envelope, budgets)
-    # create a list of mempol budgets and calculate wcet for each budget
     wcet_regulated_mempol_sw = calculate_mempol_wcet(
         bm, envelope, budgets, get_wcet_cpu_mempol_sw, "sw"
     )
     wcet_regulated_mempol_tb = calculate_mempol_wcet(
         bm, envelope, budgets, get_wcet_cpu_mempol_tb, "tb"
     )
+    
+    ylim = get_max_y([
+        wcet_regulated_memguard,
+        wcet_regulated_mempol_sw,
+        wcet_regulated_mempol_tb,
+        bm.measured_data["measured_time_ms"],
+        bm.measured_data_with_inf["measured_time_ms"],
+        bm.rising_mg["0x19"]["measured_time_ms"]
+    ])
+
     plot_wcet_vs_measurement(
         [wcet_regulated_memguard, wcet_regulated_mempol_sw, wcet_regulated_mempol_tb],
         budgets,
@@ -645,6 +862,7 @@ def main():
         os.path.join(bm.benchmark_dir, "images", f"{bm.name}_estimated_wcet_vs_measurement.eps"),
         title=f"{bm.name} Estimated WCET vs Measurement",
         legend=["MG", "MP(SW)", "MP(TB)"],
+        ylim=ylim
     )
     plot_measured_data_with_inf(
         [wcet_regulated_memguard, wcet_regulated_mempol_sw, wcet_regulated_mempol_tb],
@@ -653,7 +871,18 @@ def main():
         os.path.join(bm.benchmark_dir, "images", f"{bm.name}_measured_data_with_inf.eps"),
         title=f"{bm.name} Measured Data with Inf",
         legend=["MG", "MP(SW)", "MP(TB)"],
+        ylim=ylim
     )
+    plot_rising_mg(
+        [wcet_regulated_memguard, wcet_regulated_mempol_sw, wcet_regulated_mempol_tb],
+        budgets,
+        bm.rising_mg,
+        os.path.join(bm.benchmark_dir, "images", f"{bm.name}_rising_mg.eps"),
+        title=f"{bm.name} Rising Memguard",
+        legend=["MG", "MP(SW)", "MP(TB)"],
+        ylim=ylim
+    )
+
     calculate_deviation_and_plot(
         [wcet_regulated_memguard, wcet_regulated_mempol_sw, wcet_regulated_mempol_tb],
         budgets,
@@ -700,28 +929,55 @@ def plot_memory_budgets_comparison(
     ax2.set_xlim(zoom[0], zoom[1])
     # plt.show()
     plt.savefig(filename)
+    plt.savefig(filename.replace(".eps", ".png"))
     plt.close()
 
 
 def plot_wcet_vs_measurement(
-    wcet_list, budgets, measurement, filename, title, legend
+    wcet_list, budgets, measurement, filename, title, legend, ylim
 ):
+    colors = ["red", "orange", "green", "blue", "#B0E0E6", "#ADD8E6"]
     for i, wcet in enumerate(wcet_list):
-        plt.plot(budgets, wcet, label=legend[i], linewidth=0.4)
-    
-    plt.scatter(
+        plt.plot(
+            budgets,
+            wcet,
+            color=colors[i],
+            linestyle="solid",
+            label=legend[i],
+            linewidth=0.6,
+        )
+        crossing = 100
+        for j in range(1, len(measurement["measured_budget"])):
+            if measurement["measured_time_ms"][j] > wcet[j*10] and measurement["measured_time_ms"][j-1] <= wcet[(j-1)*10]:
+                crossing = measurement["measured_budget"][j]
+        plt.plot(
+            [crossing, crossing],
+            [0, ylim],
+            color=colors[i],
+            linestyle="dotted",
+            label=f"{legend[i]}: {crossing} MB/s",
+        )
+    plt.plot(
         measurement["measured_budget"],
         measurement["measured_time_ms"],
-        label="Measured",
-        color="r",
-        s=3,
-        zorder=2,
+        color="#4682B4",
+        label=f"Measured (Inf: 0 MB/s)",
+        linestyle="dashed",
+        linewidth=0.8,
     )
+    plt.fill_between(
+        measurement["measured_budget"],
+        measurement["measured_time_ms"],
+        color="#ADD8E6",
+        alpha=0.1,
+    )
+    plt.ylim(0, ylim*1.05)
     plt.legend(loc="upper right")
     plt.xlabel("Budget (MB/s)")
     plt.ylabel("Execution Time (ms)")
     plt.title(title)
     plt.savefig(filename)
+    plt.savefig(filename.replace(".eps", ".png"))
     # plt.show()
     plt.close()
 

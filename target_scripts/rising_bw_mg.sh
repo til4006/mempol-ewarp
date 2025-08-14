@@ -26,7 +26,7 @@ do
 	sudo jailhouse memguard 0 1000 $cachelines $3
 	sleep 1s
 	NUMBER=$(printf "%08d" $i)
-	../vision/$1_$2/$1 -d 0 -p 0 -c 1 -t 1 -l 2 -o $DIR_NAME/mg/timing_$NUMBER.csv -b ../vision/$1_$2
+	../vision/$1_$2/$1 -d 0 -p 0 -c 0 -t 1 -l 2 -o $DIR_NAME/mg/timing_$NUMBER.csv -b ../vision/$1_$2
 done
 echo -ne "\n"
 head -n 1 $DIR_NAME/mg/timing_00000100.csv > $DIR_NAME/mg/rising_mg_$3.csv && tail -n+2 -q $DIR_NAME/mg/timing*.csv >> $DIR_NAME/mg/rising_mg_$3.csv

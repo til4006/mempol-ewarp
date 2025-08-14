@@ -1,6 +1,9 @@
-cp ./benchmarks/disparity_cif/images/*.eps ./benchmarks/upload/
-cp ./benchmarks/disparity_vga/images/*.eps ./benchmarks/upload/
-cp ./benchmarks/tracking_cif/images/*.eps ./benchmarks/upload/
-cp ./benchmarks/tracking_vga/images/*.eps ./benchmarks/upload/
-cp ./benchmarks/mser_vga/images/*.eps ./benchmarks/upload/
-cp ./benchmarks/sift_vga/images/*.eps ./benchmarks/upload/
+cp -r ./benchmarks/L2_no_inf/tracking_cif/images/ ./benchmarks/upload/
+cp -r ./benchmarks/L2_no_inf/tracking_vga/images/ ./benchmarks/upload/
+cp -r ./benchmarks/L2_no_inf/mser_vga/images/ ./benchmarks/upload/
+cp -r ./benchmarks/L2_no_inf/sift_vga/images/ ./benchmarks/upload/
+
+cp -r ./benchmarks/L2_with_inf/tracking_cif/images/ ./benchmarks/upload/
+cp -r ./benchmarks/L2_with_inf/tracking_vga/images/ ./benchmarks/upload/
+cp -r ./benchmarks/L2_with_inf/mser_vga/images/ ./benchmarks/upload/
+cp -r ./benchmarks/L2_with_inf/sift_vga/images/ ./benchmarks/upload/
